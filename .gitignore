@@ -1,0 +1,28 @@
+# 凭证与本地配置：绝不入库（见 CONTEST_DECLARATION.md 信息安全声明）
+.env
+.env.*
+*.local.json
+mcp-config.json
+mcp-config.local.json
+*token*
+*secret*
+*credential*
+
+# MCP 实时响应样本默认不入库（见 samples/README.md 的理由）
+# 若确认无个人信息后需公开留档，人工 git add -f
+samples/*.raw.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

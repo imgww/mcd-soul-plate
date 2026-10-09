@@ -1,0 +1,7 @@
+# 本项目零第三方依赖：仅使用 Python 3.10+ 标准库
+# （urllib / json / itertools / dataclasses / argparse / re / os / sys / pathlib）
+#
+# 之所以不引入 mcp SDK 或 requests，是为了让评审 clone 后无需 pip install 即可运行。
+# src/mcp_client.py 为自研的极简 streamable HTTP MCP 客户端。
+#
+# 若你的环境 Python < 3.10，源码里的 `X | None` 类型注解需改为 Optional[X]。

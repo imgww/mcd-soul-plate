@@ -1,0 +1,12 @@
+{
+  "_comment": "麦当劳 MCP 配置示例（脱敏）。只含环境变量占位符，不含真实凭证。使用方法：把 mcpServers 段粘贴到 MCP 客户端（WorkBuddy / Claude Desktop / 其他）的自定义连接器配置中，并将 MCD_MCP_TOKEN 替换为你在 https://open.mcd.cn/mcp 控制台激活后获得的 Token；或导出为同名环境变量后运行本项目 CLI。",
+  "mcpServers": {
+    "mcd-mcp": {
+      "type": "streamablehttp",
+      "url": "${MCD_MCP_URL:-https://mcp.mcd.cn}",
+      "headers": {
+        "Authorization": "Bearer ${MCD_MCP_TOKEN}"
+      }
+    }
+  }
+}
