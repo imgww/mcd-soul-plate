@@ -7,7 +7,10 @@
     "personality_divergence_report",
     "environment_readiness_routing",
     "offline_sample_replay",
-    "parameter_visualization"
+    "parameter_visualization",
+    "order_plan_guidance",
+    "order_execution",
+    "store_menu_matching"
   ],
   "functional_degradations": [
     {
@@ -79,6 +82,36 @@
       "evidence_label": "已验证",
       "recovery": "按状态对应的指引配置后重跑本检查",
       "stop_condition": "环境为 needs_setup 或 unavailable 且无可用降级时停止受影响流程"
+    },
+    {
+      "capability": "order_plan_guidance",
+      "trigger": "用户想从推荐结果走到下单，但缺少门店编码或商品编码",
+      "fallback": "输出可下单清单：订单项、缺口清单与引导说明，由用户自行补齐后提交",
+      "user_input": "明确告知这不是已生成的订单，并列出还缺哪些字段、各由哪个工具提供",
+      "limitations": "清单不含实付金额；未做核价时无法给出价格",
+      "evidence_label": "已验证",
+      "recovery": "按缺口提示补齐 storeCode / productCode 后重跑",
+      "stop_condition": "推荐结果为空或字段缺口无法补齐时停止，不生成无法执行的假清单"
+    },
+    {
+      "capability": "order_execution",
+      "trigger": "用户显式要求由本 Skill 代为下单",
+      "fallback": "默认拒绝并说明如何只用清单自行下单；不代为下单",
+      "user_input": "要求同时给出 --allow-order 与 --confirm，并明确下单不可逆",
+      "limitations": "下单会产生真实订单与支付链接；支付仍需用户在麦当劳侧完成",
+      "evidence_label": "已验证",
+      "recovery": "确认无误后重新给出两道开关；缺任一仍会拒绝",
+      "stop_condition": "未确认、字段不齐或参数非法时一律拒绝，退出码 4/5/6，不做部分下单"
+    },
+    {
+      "capability": "store_menu_matching",
+      "trigger": "需要把菜名映射为下单所需的 productCode",
+      "fallback": "按精确、去括号后缀、包含三级匹配；匹配不到则如实报告未命中",
+      "user_input": "输出命中数与未命中菜名，请用户确认是否调整组合",
+      "limitations": "门店菜单与营养表可能不同步；部分推荐菜名在特定门店不在售",
+      "evidence_label": "已验证",
+      "recovery": "换一家门店或调整推荐组合后重试",
+      "stop_condition": "未命中项不做模糊猜测，宁可报告失败也不猜编码"
     }
   ],
   "dependencies": [
@@ -118,7 +151,7 @@
         "rotate_or_revoke": "不涉及",
         "security": "仅使用标准库，不引入任何第三方包，避免供应链风险；不使用 eval/exec，不执行下载来的远程代码",
         "verified_at": "2026-10-09",
-        "applies_to_version": "1.1.0"
+        "applies_to_version": "1.2.0"
       },
       "degradation": [
         {
@@ -180,7 +213,10 @@
       "auth_type": "token",
       "capabilities": [
         "nutrition_constraint_solving",
-        "single_meal_composition"
+        "single_meal_composition",
+        "order_plan_guidance",
+        "order_execution",
+        "store_menu_matching"
       ],
       "checks": [
         {
@@ -239,7 +275,7 @@
         "rotate_or_revoke": "重新激活即可获得新 Token，旧 Token 失效；本地删除环境变量即可停止使用",
         "security": "本 Skill 只调用 list-nutrition-foods，刻意不接入 create-order、auto-bind-coupons、draw-lottery 等写操作工具，也不接入 query-my-* 个人资产查询；不需要门店信息、配送地址或会员资产；异常信息经 mask_secret 兜底脱敏",
         "verified_at": "2026-10-09",
-        "applies_to_version": "1.1.0"
+        "applies_to_version": "1.2.0"
       },
       "degradation": [
         {
@@ -261,6 +297,36 @@
           "evidence_label": "已验证",
           "recovery": "配置 Token 后重跑",
           "stop_condition": "样本缺失时停止，不生成假方案"
+        },
+        {
+          "capability": "order_plan_guidance",
+          "trigger": "无 Token 或未提供门店编码，无法拉取门店菜单与核价",
+          "fallback": "仅输出不含编码的清单骨架与缺口说明，由用户自行补齐",
+          "user_input": "告知缺 storeCode 与 productCode，建议配置 Token 或直接在 App 操作",
+          "limitations": "无实付金额与在售校验",
+          "evidence_label": "已验证",
+          "recovery": "配置 Token 并提供 storeCode 后重跑",
+          "stop_condition": "不因缺 Token 而编造门店或价格"
+        },
+        {
+          "capability": "order_execution",
+          "trigger": "Token 无效或服务不可达，无法下单",
+          "fallback": "拒绝执行并说明原因，不做任何部分下单",
+          "user_input": "提示下单链路不可用，请改由麦当劳 App 完成",
+          "limitations": "无法代下单",
+          "evidence_label": "已验证",
+          "recovery": "恢复 Token 后重试",
+          "stop_condition": "服务不可用时立即停止，绝不尝试绕过"
+        },
+        {
+          "capability": "store_menu_matching",
+          "trigger": "门店编码无效或拉取菜单失败",
+          "fallback": "报告无法匹配，productCode 保持未匹配状态",
+          "user_input": "输出未命中原因，请确认门店编码是否正确",
+          "limitations": "该次下单链路不可用",
+          "evidence_label": "已验证",
+          "recovery": "核对门店编码或更换门店",
+          "stop_condition": "匹配失败即停止，不用近似编码凑"
         }
       ]
     },
@@ -306,7 +372,7 @@
         "rotate_or_revoke": "重新拉取并脱敏后替换旧文件",
         "security": "样本仅含 list-nutrition-foods 的营养成分表；入库前经 docs/sanitize_sample.py 递归检查 15 类禁止字段并脱敏 traceId；.gitignore 默认拦截所有 *.raw.json，仅对本文件开白名单",
         "verified_at": "2026-10-09",
-        "applies_to_version": "1.1.0"
+        "applies_to_version": "1.2.0"
       },
       "degradation": [
         {
@@ -388,7 +454,7 @@
         "rotate_or_revoke": "不涉及",
         "security": "仅以 headless 模式调用截图能力，本地渲染本地 SVG，不访问外部网络资源，不执行下载内容",
         "verified_at": "2026-10-09",
-        "applies_to_version": "1.1.0"
+        "applies_to_version": "1.2.0"
       },
       "degradation": [
         {

@@ -1,7 +1,7 @@
 ---
 name: mcd-soul-plate
 description: 按 SOUL 人格偏好从麦当劳真实营养数据解出符合该人格约束的搭配。适用于「我是哦不人/社恐/牛马，帮我配一顿麦当劳」「按我的人格点餐」「16 种人格分别吃什么」这类请求。把人格短评翻译成可执行的营养约束（钠上限、热量预算、蛋白下限、品类与放纵度），用确定性搜索求解并校验约束。只读麦当劳 MCP 的 list-nutrition-foods，不下单不领券不改账户；离线模式无需 Token 与网络。
-version: 1.1.0
+version: 1.2.0
 agent_created: true
 ---
 
@@ -29,10 +29,73 @@ agent_created: true
 
 **不触发**的情况：
 
-- 用户要下单、领券、抽奖、改账户 → 本 Skill 只读，不做任何有资产后果的动作
-- 用户要其他品牌的推荐 → 数据源仅麦当劳自有营养库
 - 用户要减重方案或临床营养处方 → 本 Skill 只回答「按这个人格该吃什么」，
   不回答「你应该吃多少」
+- 用户只是问别家吃什么 → 数据源仅麦当劳自有营养库
+
+## 从推荐到下单
+
+推荐结果可以转成**可下单清单**，但**本 Skill 默认不下单**。
+
+这不是能力缺失，是实测得出的事实：`create-order` 的四个必需字段里
+**三个不在营养表中**——
+
+| 必需字段 | 来源 |
+|---|---|
+| `storeCode` | `query-nearby-stores` / `delivery-query-stores` |
+| `items[].productCode` | `query-meals`（门店菜单）|
+| `takeWayCode` | `calculate-price` 的返回 |
+| `orderType` / `beType` | 可由用户选择 |
+
+`list-nutrition-foods` 只给中文菜名，不给商品编码。所以推荐结果**无法直接**
+构造合法下单调用——必须由用户补齐门店与编码。
+
+### 用法
+
+```bash
+# 生成可下单清单（只读，不下单）
+python src/soul_plate.py --soul mum --order-plan
+
+# 外送场景
+python src/soul_plate.py --soul mum --order-plan --pickup delivery
+
+# 有门店编码时，拉菜单回填 productCode 并核价（只读，需联网）
+python src/soul_plate.py --soul mum --order-plan \
+    --store-code 12345 --be-code ABC --quote
+
+# 机器可读
+python src/soul_plate.py --soul mum --order-plan --json
+```
+
+### 真实下单：三重校验，缺一即拒绝
+
+```bash
+python src/soul_plate.py --soul mum --order-plan \
+    --store-code 12345 --be-code ABC \
+    --allow-order --confirm
+```
+
+1. 必须显式加 `--allow-order`（开启下单能力，默认关闭）
+2. 必须显式加 `--confirm`（本次已获用户授权，**每次都要重新给出**）
+3. 字段必须齐备（`productCode` / `storeCode` / `takeWayCode` / `beCode`）
+
+任一不满足即拒绝执行，**不做部分下单**。退出码：`4` 缺确认、`5` 字段未齐备、
+`6` 参数被拒。
+
+### 支付不归本 Skill 管
+
+下单后由用户在麦当劳侧完成支付（支付链接扫码或 App）。支付完成后可用
+`query-order` 回查订单状态。本 Skill **不接入任何支付能力**。
+
+### 下单与内容合规
+
+比赛规则全文**未禁止下单**，且第 6 行明确把「业务处理、任务执行」列为官方认可的能力形态，
+第 21 行只要求「真实使用麦当劳 MCP 能力」。因此下单功能本身合规。
+
+但外送链路会接触手机号与收货地址 —— 按规则「个人信息」条款，这些信息
+**仅用于用户自己的下单**，不得留存、不得写入任何文件或样本。
+
+另需注意内容合规 d 项：下单失败、缺货、价格波动等负面场景**不得归因或暗示品牌**。
 
 ## 数据来源
 
@@ -110,14 +173,18 @@ Token 只从环境变量读取，异常信息经 `mask_secret()` 兜底脱敏。
 
 ## 边界与不做的事
 
-- **只读、零写操作**：不调用 `create-order` / `auto-bind-coupons` / `draw-lottery`
-  等任何写操作工具；不接入任何返回个人资产的 `query-my-*` 工具
-- **不产生资损**：不产生真实订单、不占用券与积分
+- **默认不下单**：下单能力默认关闭，需显式开启且逐次确认，字段不齐则拒绝
+- **不接入支付**：支付在麦当劳侧完成，本 Skill 只引导
+- **不做券与积分写操作**：不调用 `auto-bind-coupons`、`draw-lottery`、
+  `mall-create-order`，不改变用户券资产
+- **不留存个人信息**：外送链路的手机号与地址仅用于当次下单，不写文件、不入样本
 - **不做医疗或营养建议**：每次输出固定附免责声明
 - **不做减重承诺**：定位是均衡搭配，输出不含节食方案
 - **不跨品牌对比**：数据源仅麦当劳自有营养库
+- **不猜商品编码**：菜单匹配不上就如实报告未命中，不用近似编码凑
 - **停止条件**：归一化后 0 项（字段未校准，退出码 3）、网络不可达（退出码 2）、
-  约束无解（输出诊断建议，退出码 1）——均如实报错，不用缓存或假数据顶替
+  约束无解（退出码 1）、缺下单确认（退出码 4）、下单字段未齐（退出码 5）——
+  均如实报错，不用缓存或假数据顶替
 
 ## 可验证性
 
@@ -143,6 +210,7 @@ src/
   soul.py           16 人格六维权重 + provenance 溯源
   soul_engine.py    人格 → 硬约束 / 候选池 / 重排 / 分级回退
   soul_plate.py     CLI 入口
+  order_flow.py     下单引导：清单 / 缺口 / 菜单匹配 / 三重下单锁
   nutrition.py      营养取数与字段归一化
   composer.py       单日组合穷举与打分
   mcp_client.py     极简 streamable HTTP MCP 客户端（零依赖）
@@ -151,7 +219,7 @@ scripts/
 references/
   setup-guide.md        Token 获取与配置指引
 tests/
-  test_soul.py          36 项断言
+  test_soul.py          94 项断言
 samples/                MCP 实时响应样本（已脱敏公开，供离线复现）
 ```
 

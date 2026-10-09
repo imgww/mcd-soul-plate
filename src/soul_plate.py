@@ -34,6 +34,7 @@ from nutrition import load_offline, fetch_foods, detect_unknown_fields
 from composer import diagnose
 from soul import SOULS, SOUL_ORDER, get, closest_key
 from soul_engine import recommend, verify_divergence, build_constraints
+from order_flow import BE_TYPES, OrderPlanner
 
 DISCLAIMER = ("本项目为麦当劳程序员节创意开发大赛参赛作品，非麦当劳官方产品。"
               "输出仅供参考，不构成医疗、营养或其他专业建议；"
@@ -196,6 +197,18 @@ def main() -> None:
     ap.add_argument("--offline", help="离线数据路径，无需 Token")
     ap.add_argument("--probe-dump", help="落盘 MCP 原始响应（校准用）")
     ap.add_argument("--list-tools", action="store_true", help="MCP 自检")
+    ap.add_argument("--pickup", default="pickup",
+                    choices=sorted(BE_TYPES), help="取餐方式（默认到店自取）")
+    ap.add_argument("--order-plan", action="store_true",
+                    help="把推荐结果转成可下单清单（含缺口清单与引导，不下单）")
+    ap.add_argument("--store-code", help="门店编码（有则可匹配菜单回填 productCode）")
+    ap.add_argument("--be-code", help="业务编码（得来速/外送/团餐场景必填）")
+    ap.add_argument("--quote", action="store_true",
+                    help="调用 calculate-price 核价（只读，需联网与门店编码）")
+    ap.add_argument("--allow-order", action="store_true",
+                    help="开启下单能力（高风险，默认关闭；仍需 --confirm 才能执行）")
+    ap.add_argument("--confirm", action="store_true",
+                    help="确认本次下单已获用户授权（无 --allow-order 时无效）")
     args = ap.parse_args()
 
     if args.souls:
@@ -226,6 +239,11 @@ def main() -> None:
         except KeyError as exc:
             print(str(exc), file=sys.stderr)
             sys.exit(1)
+
+        if args.order_plan or args.quote or args.allow_order:
+            _run_order_flow(foods, sp, args)
+            return
+
         if not args.json:
             _fmt_one(foods, sp, args.kcal, args.tolerance, args.top)
         else:
@@ -248,6 +266,149 @@ def main() -> None:
     sp = SOULS[key]
     print(f"未指定人格，按菜单特征自动匹配为【{sp.name}】（--soul 可指定其他）。\n")
     _fmt_one(foods, sp, args.kcal, args.tolerance, args.top)
+
+
+def _run_order_flow(foods, sp, args) -> None:
+    """下单引导流程：推荐 → 清单 → 缺口 → 可选核价 → 默认不下单。
+
+    真实下单必须同时满足三个条件，缺一即拒绝：
+      1. 命令行给了 --allow-order（显式开启能力）
+      2. 命令行给了 --confirm（本次已获用户授权）
+      3. 清单字段齐备（productCode / storeCode / takeWayCode 等）
+    """
+    r = recommend(foods, sp, args.kcal, args.tolerance)
+    if not r["plans"]:
+        print(f"当前人格约束下无可用方案，无法生成下单清单。", file=sys.stderr)
+        sys.exit(1)
+
+    top_plan = r["plans"][0]
+
+    # 下单的确认校验必须前置于任何网络连接：
+    # 否则缺 Token 时会先因连接失败报错，用户看不到「缺 --confirm」这条更关键的信息。
+    if args.allow_order and not args.confirm:
+        print("  已拒绝下单：本次未给出 --confirm。", file=sys.stderr)
+        print("  下单会产生真实订单，属不可逆操作。", file=sys.stderr)
+        print("  确认无误后请同时加 --allow-order 与 --confirm 重跑。", file=sys.stderr)
+        print("  如只想看清单不打算下单，去掉 --allow-order 即可。", file=sys.stderr)
+        sys.exit(4)
+
+    client = None
+    if args.quote or args.allow_order:
+        from mcp_client import StreamableHTTPClient
+        client = StreamableHTTPClient()
+
+    planner = OrderPlanner(client, allow_create_order=args.allow_order)
+    plan = planner.plan(foods, top_plan.items, sp.key, sp.name,
+                        pickup=args.pickup,
+                        store_code=args.store_code,
+                        be_code=args.be_code)
+
+    # 有门店编码时可拉菜单回填 productCode（只读）
+    if args.store_code and client is not None:
+        spec = BE_TYPES[args.pickup]
+        menu = planner.match_menu(args.store_code, spec["orderType"],
+                                  spec["beType"], args.be_code)
+        if menu:
+            hit, missed = planner.match_items(plan, menu)
+            print(f"门店菜单匹配：命中 {hit}/{len(plan.items)} 项"
+                  + (f"，未命中：{', '.join(missed)}" if missed else ""))
+            if hit == len(plan.items):
+                plan.gaps = [g for g in plan.gaps
+                             if g.field not in ("items[].productCode",)]
+        else:
+            print("未能获取门店菜单（需联网且门店编码有效），productCode 保持待匹配。")
+
+    # 可选核价（只读）
+    if args.quote and client is not None and args.store_code:
+        q = planner.quote(plan, args.store_code, args.be_code)
+        if q is None:
+            print("核价未完成：需已回填 productCode（缺少门店菜单时无法核价）。",
+                  file=sys.stderr)
+
+    if args.json:
+        print(json.dumps(plan.as_dict(), ensure_ascii=False, indent=2))
+        return
+
+    _fmt_order_plan(plan, r, args)
+
+    # 真实下单：确认已在流程开头校验，此处只校验字段齐备性
+    if not args.allow_order:
+        return
+    if not plan.is_ready():
+        print("\n  已拒绝下单：字段未齐备，不做部分下单。", file=sys.stderr)
+        for g in plan.blocking_gaps():
+            print(f"     缺 {g.field} —— 由 {g.provided_by} 提供", file=sys.stderr)
+        sys.exit(5)
+
+    spec = BE_TYPES[args.pickup]
+    try:
+        result = planner.create_order(
+            store_code=args.store_code, order_type=spec["orderType"],
+            be_type=spec["beType"],
+            items=[{"productCode": i.product_code, "quantity": i.quantity}
+                   for i in plan.items],
+            confirmed_by_user=True, be_code=args.be_code,
+            take_way_code=(plan.quote or {}).get("takeWayCode")
+            if isinstance(plan.quote, dict) else None,
+            remark=None,
+        )
+    except (PermissionError, ValueError) as exc:
+        print(f"\n  下单被拒绝：{exc}", file=sys.stderr)
+        sys.exit(6)
+
+    print(BAR)
+    print("  下单已提交")
+    print(BAR)
+    print(json.dumps(result, ensure_ascii=False, indent=2)[:1200])
+    print(BAR)
+    print("  支付在麦当劳侧完成：可通过支付链接扫码或打开麦当劳 App。")
+    print("  支付完成后回复「支付完成」，可用 query-order 回查订单状态。")
+    print(BAR)
+    print(DISCLAIMER)
+
+
+def _fmt_order_plan(plan, r, args) -> None:
+    """输出可下单清单：订单项、缺口、引导。"""
+    spec = BE_TYPES[plan.pickup]
+    print(BAR)
+    print(f"  可下单清单 · {plan.soul_name} · {spec['label']}")
+    print(BAR)
+    print("  ⚠ 这是一份清单，不是已生成的订单。本 Skill 默认不下单。")
+    print(SUB)
+    print("  订单项")
+    for it in plan.items:
+        code = it.product_code or "待匹配"
+        print(f"     · {it.name:<24} ×{it.quantity}  "
+              f"{it.kcal:>5.0f} kcal   编码 {code}")
+    print(f"     合计 {plan.total_kcal:.0f} kcal · {len(plan.items)} 项")
+    print(SUB)
+
+    print("  还缺什么")
+    if plan.gaps:
+        for g in plan.gaps:
+            print(f"     · {g.field:<22} {g.why}")
+            print(f"       来源：{g.provided_by}")
+    else:
+        print("     · 无 —— 字段已齐全")
+    print(SUB)
+
+    if plan.quote:
+        print("  核价结果（calculate-price，只读）")
+        print(f"     {json.dumps(plan.quote, ensure_ascii=False)[:300]}")
+        print(SUB)
+
+    print("  接下来怎么做")
+    for line in plan.guidance:
+        print(f"     {line}")
+    print(SUB)
+
+    if not plan.is_ready():
+        print(f"  字段未齐备，当前不可下单。缺 {len(plan.blocking_gaps())} 项阻塞字段。")
+    else:
+        print("  字段已齐备。若确需由本 Skill 代下单，需同时加 --allow-order 与 --confirm。")
+        print("  两道开关缺一不可，且 --confirm 每次都要重新给出。")
+    print(BAR)
+    print(DISCLAIMER)
 
 
 if __name__ == "__main__":

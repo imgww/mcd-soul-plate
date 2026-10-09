@@ -12,7 +12,8 @@
   <a href="#二菜单的真实结构不止一个反常识">菜单结构</a> ·
   <a href="#三凭什么不一样">凭什么不一样</a> ·
   <a href="#四怎么跑">怎么跑</a> ·
-  <a href="#五可验证性">可验证性</a>
+  <a href="#五从推荐到下单">从推荐到下单</a> ·
+  <a href="#七可验证性">可验证性</a>
 </p>
 
 ---
@@ -54,7 +55,7 @@
 
 三条设计底线：
 
-- **纯只读、零下单。** 不碰 `create-order` / `auto-bind-coupons` / `draw-lottery`，不产生真实订单、不占用券与积分。
+- **默认不下单。** 具备下单能力但**默认关闭**，需同时显式加 `--allow-order` 与 `--confirm` 且字段齐备才可能触发；券与积分类写操作（`auto-bind-coupons` / `draw-lottery`）**永久不接入**。
 - **权重可审计。** 全部 16×6 维权重公开在 `src/soul.py`，任一条均可手工修正。
 - **不静默违背约束。** 人格约束在真实菜单上可能真的无解，此时**分级回退并明确报告**放宽了什么。
 
@@ -137,7 +138,88 @@
 
 ---
 
-## 四、怎么跑
+## 五、从推荐到下单
+
+推荐结果可以转成**可下单清单**，但**本项目默认不下单**。
+
+这不是偷懒，是实测得出的事实——`create-order` 的四个必需字段里，**三个不在营养表中**：
+
+| 必需字段 | 来源 | 本项目能独立拿到吗 |
+|---|---|---|
+| `orderType` / `beType` | 用户选取餐方式 | 可以 |
+| `storeCode` | `query-nearby-stores` / `delivery-query-stores` | 否 |
+| `items[].productCode` | `query-meals`（门店菜单）| **否——营养表只有中文菜名** |
+| `takeWayCode` | `calculate-price` 的返回 | 否 |
+
+所以推荐结果**无法直接**构造下单调用。工具的做法是：把缺口逐项列出来，而不是假装已经能下单。
+
+```bash
+# 生成可下单清单（只读，不下单）
+python src/soul_plate.py --soul mum --order-plan
+
+# 外送场景会额外要求 beCode 与地址
+python src/soul_plate.py --soul mum --order-plan --pickup delivery
+
+# 有门店编码时，拉门店菜单回填 productCode 并核价（只读，需联网）
+python src/soul_plate.py --soul mum --order-plan --store-code 12345 --quote
+```
+
+输出长这样：
+
+```
+══════════════════════════════════════════════════════════════════
+  可下单清单 · 吗喽 · 到店自取
+══════════════════════════════════════════════════════════════════
+  ⚠ 这是一份清单，不是已生成的订单。本 Skill 默认不下单。
+──────────────────────────────────────────────────────────────────
+  订单项
+     · 吉士汉堡包      ×1    294 kcal   编码 待匹配
+     · 草莓麦旋风      ×1    295 kcal   编码 待匹配
+     · 冰浓浓黑巧中杯   ×1    135 kcal   编码 待匹配
+     合计 724 kcal · 3 项
+──────────────────────────────────────────────────────────────────
+  还缺什么
+     · storeCode              下单必填门店编码，但营养表不含门店信息
+       来源：query-nearby-stores
+     · items[].productCode    下单必填商品编码；营养表只有中文菜名
+       来源：query-meals
+     · takeWayCode            到店场景必填取餐方式码，来自核价返回
+       来源：calculate-price
+```
+
+### 真实下单：三重校验，缺一即拒绝
+
+```bash
+python src/soul_plate.py --soul mum --order-plan \
+    --store-code 12345 --be-code ABC \
+    --allow-order --confirm
+```
+
+1. `--allow-order` 开启下单能力（默认关闭）
+2. `--confirm` 本次已获授权（**每次都要重新给出**）
+3. `productCode` / `storeCode` / `takeWayCode` 字段齐备
+
+任一不满足即拒绝，**不做部分下单**。退出码：`4` 缺确认、`5` 字段未齐、`6` 参数被拒。
+
+**支付不归本项目管**——下单后由你在麦当劳侧扫码或 App 支付，
+支付完成可用 `query-order` 回查状态。本项目不接入任何支付能力。
+
+### 关于合规
+
+比赛规则全文**未禁止下单**，且第 6 行明确把「业务处理、任务执行」列为官方认可的
+能力形态，第 21 行只要求「真实使用麦当劳 MCP 能力」。
+
+但外送链路会接触手机号与收货地址——按规则「个人信息」条款，这些信息
+**仅用于用户自己的下单**，本项目不写文件、不落样本、不进 Git。
+
+### 菜单匹配不做模糊猜测
+
+`match_items()` 用精确 → 去括号后缀 → 包含三级匹配，**匹配不到就如实报告未命中**。
+猜错编码会导致下单失败或下错商品，比匹配失败严重得多。
+
+---
+
+## 六、怎么跑
 
 ### 前置条件
 
@@ -177,7 +259,7 @@ python src/soul_plate.py --soul miao --json
 # 离线复现（不需要 Token，仓库自带 MCP 响应样本）
 python src/soul_plate.py --compare --offline samples/nutrition-foods.raw.json
 
-# 回归测试（不需要 Token 与网络，36 项断言）
+# 回归测试（不需要 Token 与网络，94 项断言）
 python tests/test_soul.py
 ```
 
@@ -189,7 +271,7 @@ python tests/test_soul.py
 
 ---
 
-## 五、可验证性
+## 七、可验证性
 
 | 主张 | 怎么证 |
 |:---|:---|
@@ -200,7 +282,7 @@ python tests/test_soul.py
 | 妥协被如实报告 | 分级回退必须写入 `relaxed`，测试断言其非空 |
 | 数据是真数据 | 154 项来自 MCP 实时响应；合成夹具隔离在 `tests/fixtures/` |
 
-**36 项断言**分四层：
+**94 项断言**分六层：
 
 | 层 | 项数 | 覆盖 |
 |:---|:---:|:---|
@@ -208,6 +290,8 @@ python tests/test_soul.py
 | B 翻译层 | 6 | 三条**单调性**检验：热量随 `heat` 单调不减、钠上限随 `sodium` 单调递减、同品类上限随 `variety` 单调不增 |
 | C 引擎层 | 8 | 营销命名品识别与剔除、候选池方向、件数范围、回退档位单调放宽 |
 | D 方案层 | 12 | 全员出解、差异化、确定性、**约束遵守**、回退报告、夹具可跑、JSON 可序列化、文案合规 |
+| E Skill 结构层 | 26 | 四个结构件齐备、frontmatter 字段、正文无状态痕迹、依赖能力与降级一一对应、环境脚本四态且不回显凭据、三类反例不吐栈且退出码正确 |
+| F 下单纪律层 | 31 | 清单不误报为订单、缺口如实列出、菜单匹配不猜编码、**下单三重锁**、字段校验七项、CLI 缺确认退出码 4 |
 
 ---
 
@@ -223,11 +307,12 @@ mcd-soul-plate/
 │   ├── soul.py                 16 人格的六维偏好向量 + provenance 溯源
 │   ├── soul_engine.py          人格 → 硬约束 / 候选池 / 重排 / 分级回退
 │   ├── soul_plate.py           CLI 入口
+│   ├── order_flow.py          下单引导：清单 / 缺口 / 菜单匹配 / 三重下单锁
 │   ├── nutrition.py            营养取数与字段归一化（真实字段已校准）
 │   ├── composer.py             单日组合穷举与打分引擎
 │   └── mcp_client.py           极简 streamable HTTP MCP 客户端（零依赖）
 ├── tests/
-│   ├── test_soul.py            36 项断言
+│   ├── test_soul.py            94 项断言
 │   └── fixtures/               合成夹具（与真实数据物理隔离）
 ├── samples/                    MCP 实时响应样本（已脱敏并公开，供评审离线复现）
 ├── README.md · MCP_INTEGRATION.md · workbuddy.md

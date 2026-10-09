@@ -83,20 +83,59 @@
 
 `initialize` 与 `notifications/initialized` 是 MCP 协议握手，所有调用前自动完成，不属业务工具。
 
-### 2.3 明确**不使用**的工具及理由
+### 2.3 刻意不接入的工具及理由
 
-35 个工具中其余 33 个本项目刻意不接入：
+35 个工具中，本项目只接入 4 个，其余 **31 个刻意不接入**：
 
 | 类别 | 代表工具 | 不接入的理由 |
 |---|---|---|
-| 下单与取消 | `create-order`、`cancel-order`、`calculate-price` | 产生真实订单与支付链路，Demo 与评审复算有资损风险 |
-| 券与积分写操作 | `auto-bind-coupons`、`draw-lottery`、`mall-create-order` | 改变用户券资产、原子扣减积分；`draw-lottery` 自身描述即要求先展示扣减并经用户确认 |
-| 个人资产查询 | `query-my-account`、`query-my-coupons`、`order-list`、`query-my-prizes` | 依赖登录会员态，评审无法复现，且涉及个人信息 |
-| 门店/地址上下文 | `query-nearby-stores`、`query-meals`、`query-store-coupons`、`delivery-*` | 需要 `storeCode`/`addressId`，把结果绑死在特定地理位置与配送地址上 |
-| 派对预约链路 | `query-party-*`、`party-order-create` | 多级下钻依赖 `spuId`，与「配餐」无关 |
-| 活动日历 | `campaign-calendar` | 输出随时间漂移，与营养配平无因果关系 |
+| **券与积分写操作** | `auto-bind-coupons`、`draw-lottery`、`mall-create-order` | 改变用户券资产、原子扣减积分；`draw-lottery` 自身描述即要求先展示扣减并经用户确认 |
+| **下单与取消** | `create-order`、`cancel-order` | 见下方专门说明：默认关闭，仅在显式开启且逐次确认时才可触发 |
+| **个人资产查询** | `query-my-account`、`query-my-coupons`、`order-list`、`query-my-prizes` | 依赖登录会员态，评审无法复现，且涉及个人信息 |
+| **地址簿写入** | `delivery-create-address` | 会创建并留存用户的联系人、手机号与详细地址。本项目只需 `addressId`，不应代用户创建 |
+| **门店/地址上下文** | `query-nearby-stores`、`query-meals`、`query-store-coupons`、`delivery-*` | 部分按需接入：下单引导会只读调用门店与菜单查询，但这些数据**不持久化** |
+| **派对预约链路** | `query-party-*`、`party-order-create` | 多级下钻依赖 `spuId`，与「配餐」无关 |
+| **活动日历** | `campaign-calendar` | 输出随时间漂移，与营养配平无因果关系 |
 
-**这条边界是有意为之的设计声明**：本 Skill 的价值主张是「只读数据 + 本地算法」，不代用户做任何有资产后果的动作。
+### 2.4 关于 `create-order` 的边界声明
+
+本项目**具备**下单能力，但**默认关闭**。这不是遗漏，是三道锁的设计：
+
+1. 必须在命令行显式加 `--allow-order`（默认关闭）
+2. 必须显式加 `--confirm`（每次都要重新给出）
+3. 字段必须齐备：`productCode` / `storeCode` / `takeWayCode`（及外送场景的 `beCode`）
+
+任一不满足即拒绝执行，**不做部分下单**。
+
+**为什么默认关闭**：`create-order` 不可逆，会产生真实订单与支付链接。
+项目的主要差异化是「零门槛可复现」——`list-nutrition-foods` 零必填参数、
+不依赖门店与登录态，任何人 clone + 自己的 Token 就能复现全部结果。
+把下单做成默认行为会削弱这条主线，因此做成显式开关。
+
+**为什么技术上做不到「一步下单」**——实测 `create-order` 的必需字段里，
+只有 `orderType` 与 `beType` 能由本项目推导，其余三个都来自别的工具：
+
+| 必需字段 | 来源 | 本项目可独立获得 |
+|---|---|---|
+| `orderType` / `beType` | 用户选择取餐方式 | 可以 |
+| `storeCode` | `query-nearby-stores` / `delivery-query-stores` | 否 |
+| `items[].productCode` | `query-meals`（门店菜单）| 否——营养表只给中文菜名 |
+| `takeWayCode` | `calculate-price` 的返回 | 否 |
+| `addressId`（外送） | `delivery-query-addresses` | 否 |
+
+因此第 1 步的推荐结果**无法直接**构造合法下单调用，必须补齐门店与编码。
+`order_flow.plan()` 会把这份缺口逐项列出，而不是假装已经能下单。
+
+**菜单匹配不做模糊猜测**：`match_items()` 采用精确 → 去括号后缀 → 包含
+三级匹配，匹配不到就如实报告未命中。猜错编码会导致下单失败或下错商品，
+比匹配失败严重得多。
+
+**支付不归本项目管**：`create-order` 的 Next 段明确要求引导用户通过支付链接
+或麦当劳 App 完成支付。本项目**不接入任何支付能力**，只引导。
+
+**个人信息纪律**：外送链路会接触手机号与收货地址。按比赛规则「个人信息」条款，
+这些信息仅用于用户自己的下单。本项目**不写文件、不落样本、不进 Git**，
+`OrderPlan` 只保留 `addressId` 这类 ID 引用。
 
 ---
 

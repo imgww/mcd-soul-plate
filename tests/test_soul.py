@@ -293,6 +293,158 @@ def main() -> int:
         check("缺样本文件不吐调用栈", "Traceback" not in out)
         check("缺样本文件指出正确路径", "nutrition-foods.raw.json" in out)
 
+    print("\n--- F · 下单引导与写操作纪律 ---")
+    from order_flow import (BE_TYPES, OrderPlanner, OrderPlan, OrderItem,
+                            Gap)
+
+    class FakeClient:
+        """记录调用的假客户端，用于验证是否真的触达写操作。"""
+
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+
+        def call_tool(self, name, arguments=None):
+            self.calls.append((name, arguments or {}))
+            return {"orderId": "FAKE_ORDER"}
+
+    # 取餐方式定义完整
+    check("四种取餐方式齐备", set(BE_TYPES) == {"pickup", "dt", "delivery", "group"})
+    check("到店自取不需 beCode", BE_TYPES["pickup"]["needs_beCode"] is False)
+    check("外送需 beCode 与地址", BE_TYPES["delivery"]["needs_beCode"]
+          and BE_TYPES["delivery"]["needs_address"])
+    check("团餐为 orderType=2", BE_TYPES["group"]["orderType"] == 2)
+
+    # 清单生成：纯本地，不发任何调用
+    fc = FakeClient()
+    planner = OrderPlanner(fc)
+    foods_sample = FOODS[:3]
+    plan = planner.plan(foods_sample, foods_sample, "mum", "妈妈",
+                        pickup="pickup")
+    check("清单生成未触发任何 MCP 调用", not fc.calls, f"实际 {len(fc.calls)} 次")
+    check("清单默认不可下单", plan.is_ready() is False)
+    check("清单标出 productCode 缺口",
+          any(g.field == "items[].productCode" for g in plan.gaps))
+    check("清单标出 storeCode 缺口",
+          any(g.field == "storeCode" for g in plan.gaps))
+    check("清单声明不是已生成的订单",
+          "不是已生成的订单" in plan.as_dict()["disclaimer"])
+    check("清单 JSON 可序列化",
+          bool(json.dumps(plan.as_dict(), ensure_ascii=False)))
+
+    # 外送场景应额外要求 beCode 与 addressId
+    plan_del = planner.plan(foods_sample, foods_sample, "mum", "妈妈",
+                            pickup="delivery")
+    check("外送清单额外要求 beCode",
+          any(g.field == "beCode" for g in plan_del.gaps))
+    check("外送清单额外要求 addressId",
+          any(g.field == "addressId" for g in plan_del.gaps))
+
+    # 非法取餐方式被拒
+    try:
+        planner.plan(foods_sample, foods_sample, "mum", "妈妈",
+                     pickup="drone")
+        check("非法取餐方式被拒绝", False)
+    except ValueError:
+        check("非法取餐方式被拒绝", True)
+
+    # 下单三道锁
+    items_ok = [{"productCode": "P1", "quantity": 1}]
+    locked = OrderPlanner(fc)
+    try:
+        locked.create_order(store_code="S", order_type=1, be_type=1,
+                            items=items_ok, take_way_code="T")
+        check("未开启能力时拒绝下单", False, "竟然允许了")
+    except PermissionError:
+        check("未开启能力时拒绝下单", True)
+
+    locked2 = OrderPlanner(fc, allow_create_order=True)
+    try:
+        locked2.create_order(store_code="S", order_type=1, be_type=1,
+                             items=items_ok, take_way_code="T")
+        check("未确认时拒绝下单", False, "竟然允许了")
+    except PermissionError:
+        check("未确认时拒绝下单", True)
+
+    # 字段校验
+    field_cases = [
+        ("缺 storeCode 被拒", dict(store_code="", order_type=1, be_type=1,
+                                 items=items_ok, take_way_code="T")),
+        ("缺 items 被拒", dict(store_code="S", order_type=1, be_type=1,
+                              items=[], take_way_code="T")),
+        ("缺 productCode 被拒", dict(store_code="S", order_type=1, be_type=1,
+                                    items=[{"productCode": None, "quantity": 1}],
+                                    take_way_code="T")),
+        ("到店缺 takeWayCode 被拒", dict(store_code="S", order_type=1, be_type=1,
+                                      items=items_ok)),
+        ("外送缺 beCode 被拒", dict(store_code="S", order_type=2, be_type=2,
+                                 items=items_ok)),
+        ("备注超 50 字被拒", dict(store_code="S", order_type=1, be_type=1,
+                                items=items_ok, take_way_code="T",
+                                remark="x" * 51)),
+    ]
+    for label, kw in field_cases:
+        try:
+            OrderPlanner(fc, allow_create_order=True).create_order(
+                confirmed_by_user=True, **kw)
+            check(label, False, "竟然允许了")
+        except ValueError:
+            check(label, True)
+
+    # 全部条件满足才真正下单，且可审计
+    before = len(fc.calls)
+    res = OrderPlanner(fc, allow_create_order=True).create_order(
+        store_code="S1", order_type=1, be_type=1, items=items_ok,
+        confirmed_by_user=True, take_way_code="T1")
+    new_calls = fc.calls[before:]
+    check("条件齐备时确实调用 create-order",
+          [c[0] for c in new_calls] == ["create-order"],
+          str([c[0] for c in new_calls]))
+    check("下单返回透传", res == {"orderId": "FAKE_ORDER"})
+    op = OrderPlanner(fc, allow_create_order=True)
+    op.create_order(store_code="S1", order_type=1, be_type=1, items=items_ok,
+                    confirmed_by_user=True, take_way_code="T1")
+    check("下单次数可审计", op.create_order_call_count == 1)
+
+    # 菜单匹配：不猜编码，未命中如实报告。
+    # 用一份确定含已知菜名的组合，才能真正跑到"命中"这条分支。
+    named = [f for f in FOODS if f.name in ("吉士汉堡包", "中薯条", "巨无霸")]
+    if not named:
+        named = FOODS[:3]
+    menu = [{"name": "吉士汉堡包", "productCode": "C001"},
+            {"name": "中薯条", "productCode": "C002"},
+            {"name": "巨无霸", "productCode": "C003"},
+            {"name": "麦辣鸡腿汉堡", "productCode": "C004"}]
+    p3 = planner.plan(named, named, "mum", "妈妈")
+    hit, missed = OrderPlanner.match_items(p3, menu)
+    codes = {i.name: i.product_code for i in p3.items}
+    check("菜单匹配能命中真实菜名", hit > 0, f"hit={hit}/{len(p3.items)}")
+    check("命中项回填了 productCode",
+          all(v is not None for k, v in codes.items() if k in
+              ("吉士汉堡包", "中薯条", "巨无霸") and k in {i.name for i in p3.items}))
+    check("未命中项如实返回", len(missed) == len(p3.items) - hit,
+          f"hit={hit} missed={len(missed)}")
+    # 去括号后缀仍应能匹配（如「纯牛奶（盒装）」对上「纯牛奶」）
+    p4 = planner.plan([f for f in FOODS if "纯牛奶" in f.name][:1] or FOODS[:1],
+                      [f for f in FOODS if "纯牛奶" in f.name][:1] or FOODS[:1],
+                      "mum", "妈妈")
+    if p4.items:
+        OrderPlanner.match_items(p4, [{"name": "纯牛奶", "productCode": "M001"}])
+        check("去括号后缀可匹配",
+              p4.items[0].product_code == "M001",
+              f"得到 {p4.items[0].product_code}")
+
+    # CLI 层：--allow-order 无 --confirm 必须拒绝且不联网
+    if HAS_RAW:
+        rc, out = run(["--soul", "mum", "--order-plan", "--allow-order",
+                       "--offline", "samples/nutrition-foods.raw.json"])
+        check("CLI 缺 --confirm 退出码为 4", rc == 4, f"实际 {rc}")
+        check("CLI 缺 --confirm 明确说明不可逆", "不可逆" in out)
+        check("CLI 缺 --confirm 不吐调用栈", "Traceback" not in out)
+
+    # 默认模式绝不触发下单
+    check("默认 planner 未开启下单能力",
+          OrderPlanner(fc).allow_create_order is False)
+
     print("\n" + "=" * 66)
     total = _passed + _failed
     if not HAS_RAW:
