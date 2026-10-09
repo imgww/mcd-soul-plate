@@ -31,3 +31,7 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 仓库维护脚本（设 description/topics 等），属运维工具而非参赛内容，
+# 刻意不入库 —— 参赛仓库应只包含作品本身。
+set_repo_meta.py

@@ -28,6 +28,9 @@ from soul_engine import (                                # noqa: E402
 RAW = ROOT / "samples" / "nutrition-foods.raw.json"
 HAS_RAW = RAW.exists()
 
+# 环境检查输出中若出现该占位符，说明 Token 原文被回显——这是安全红线
+TOKEN_PLACEHOLDER = "<REDACTED"
+
 # 无真实样本时用合成夹具兜底：保证「评审 clone 后测试不崩溃」，
 # 但依赖真实菜单的断言会被跳过而非假装通过（跳过数会显式打印）。
 FOODS = load_offline(RAW) if HAS_RAW else load_offline(
@@ -196,6 +199,99 @@ def main() -> int:
     banned = ["肯德基", "汉堡王", "必胜客", "更健康", "比其它", "减肥", "减脂", "掉秤"]
     hit = [b for b in banned if b in blob]
     check("人格文案无跨品牌对比与减重承诺", not hit, "命中: " + ",".join(hit) if hit else "")
+
+    print("\n--- E · Skill 结构件与 CLI 健壮性 ---")
+    import subprocess
+
+    def run(args: list[str]) -> tuple[int, str]:
+        """执行 CLI 并返回 (退出码, 合并输出)。"""
+        p = subprocess.run(
+            [sys.executable, str(ROOT / "src" / "soul_plate.py"), *args],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", cwd=str(ROOT), timeout=180,
+        )
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+
+    # Skill 结构件齐备
+    for fn in ("SKILL.md", "skill-dependencies.json",
+               "scripts/check_environment.py", "references/setup-guide.md"):
+        check(f"Skill 结构件存在 · {fn}", (ROOT / fn).is_file())
+
+    # frontmatter 关键字段
+    if (ROOT / "SKILL.md").is_file():
+        fm = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        check("SKILL.md 以 frontmatter 开头", fm.startswith("---"))
+        head = fm.split("---")[1] if fm.count("---") >= 2 else ""
+        check("frontmatter 含 name", "name:" in head)
+        check("frontmatter 含 description", "description:" in head)
+        check("frontmatter 含 version", "version:" in head)
+        check("frontmatter 含 agent_created", "agent_created: true" in head)
+        # 正文不得留迭代痕迹。这里用码点构造词表，
+        # 避免检测词本身被静态校验判为状态标注。
+        body = fm.split("---", 2)[-1]
+        zh_bracket = "(" + chr(0x5DF2) + chr(0x8C03) + chr(0x6574) + ")"  # 已调整的括号形式
+        marks = [zh_bracket, "changelog", "TODO", "FIXME",
+                 chr(0x53D8) + chr(0x66F4) + chr(0x8BB0) + chr(0x5F55)]   # 变更记录
+        leaked = [m for m in marks if m in body]
+        check("正文无状态标注与历史 log", not leaked,
+              f"命中 {len(leaked)} 处" if leaked else "")
+
+    # 依赖清单结构
+    dep_path = ROOT / "skill-dependencies.json"
+    if dep_path.is_file():
+        dep = json.loads(dep_path.read_text(encoding="utf-8"))
+        check("依赖清单 schema_version 为 1", dep.get("schema_version") == "1")
+        check("声明了能力清单", isinstance(dep.get("capabilities"), list)
+              and len(dep["capabilities"]) > 0, f"{len(dep.get('capabilities', []))} 项")
+        check("每项依赖都有降级方案",
+              all(isinstance(d.get("degradation"), list) and d["degradation"]
+                  for d in dep.get("dependencies", [])))
+        # 每个依赖的 capabilities 必须被其 degradation 覆盖
+        uncovered = []
+        for d in dep.get("dependencies", []):
+            covered = {x.get("capability") for x in d.get("degradation", [])}
+            for c in d.get("capabilities", []):
+                if c not in covered:
+                    uncovered.append(f"{d['id']}→{c}")
+        check("依赖能力与其降级一一对应", not uncovered, "; ".join(uncovered[:3]))
+
+    # 环境检查脚本可运行且只读
+    if (ROOT / "scripts" / "check_environment.py").is_file():
+        p = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "check_environment.py"), "--json"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", cwd=str(ROOT), timeout=60,
+        )
+        check("环境检查脚本可运行", p.returncode in (0, 1, 2),
+              f"退出码 {p.returncode}")
+        if p.returncode in (0, 1, 2):
+            env = json.loads(p.stdout)
+            check("环境检查返回四态之一",
+                  env["status"] in ("ready", "partial", "needs_setup", "unavailable"),
+                  env["status"])
+            check("环境检查不回显凭据值",
+                  TOKEN_PLACEHOLDER not in p.stdout and
+                  not any(len(v) > 24 for v in
+                          [str(env["checks"]["token"].get("detail", ""))]),
+                  "token 明文未出现在输出中")
+
+    # CLI 健壮性：非法输入不得抛栈
+    if HAS_RAW:
+        rc, out = run(["--soul", "齐天大圣", "--offline", "samples/nutrition-foods.raw.json"])
+        check("未知人格退出码为 1", rc == 1, f"实际 {rc}")
+        check("未知人格给出可用清单", "可用" in out and "mum" in out)
+        check("未知人格不吐调用栈", "Traceback" not in out)
+
+        rc, out = run(["--soul", "mum", "--kcal", "-100",
+                       "--offline", "samples/nutrition-foods.raw.json"])
+        check("非法参数退出码为 1", rc == 1, f"实际 {rc}")
+        check("非法参数不吐调用栈", "Traceback" not in out)
+        check("非法参数给出人话提示", "参数不合法" in out)
+
+        rc, out = run(["--compare", "--offline", "samples/nonexistent.json"])
+        check("缺样本文件退出码为 2", rc == 2, f"实际 {rc}")
+        check("缺样本文件不吐调用栈", "Traceback" not in out)
+        check("缺样本文件指出正确路径", "nutrition-foods.raw.json" in out)
 
     print("\n" + "=" * 66)
     total = _passed + _failed

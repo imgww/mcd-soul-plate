@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from nutrition import load_offline, fetch_foods, detect_unknown_fields
 from composer import diagnose
@@ -44,7 +45,23 @@ SUB = "─" * 66
 
 def _load(args) -> tuple[list, object | None]:
     if args.offline:
-        return load_offline(args.offline), None
+        path = Path(args.offline)
+        if not path.is_file():
+            print(f"离线数据文件不存在：{args.offline}", file=sys.stderr)
+            print("请确认路径；仓库自带样本位于 samples/nutrition-foods.raw.json，"
+                  "也可配置 MCD_MCP_TOKEN 走联网模式。", file=sys.stderr)
+            sys.exit(2)
+        try:
+            foods = load_offline(path)
+        except (OSError, ValueError) as exc:
+            print(f"离线数据无法解析：{exc}", file=sys.stderr)
+            print("该文件应为 MCP list-nutrition-foods 的真实响应；"
+                  "若来自 --probe-dump，请先确认拉取成功。", file=sys.stderr)
+            sys.exit(3)
+        if not foods:
+            print("离线数据归一化后为 0 项，判定字段结构已变更。", file=sys.stderr)
+            sys.exit(3)
+        return foods, None
     from mcp_client import StreamableHTTPClient, mask_secret
     try:
         client = StreamableHTTPClient()
@@ -56,6 +73,8 @@ def _load(args) -> tuple[list, object | None]:
             print(detect_unknown_fields(payload), file=sys.stderr)
             sys.exit(3)
         return foods, payload
+    except SystemExit:
+        raise
     except Exception as exc:                      # noqa: BLE001
         print(mask_secret(str(exc)), file=sys.stderr)
         sys.exit(2)
@@ -232,4 +251,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # 参数与约束的非法输入转为人话，不向终端吐调用栈。
+    # 栈只对开发者调试有用，对 CLI 使用者只是噪音，且会掩盖真正的错误原因。
+    try:
+        main()
+    except ValueError as exc:
+        print(f"参数不合法：{exc}", file=sys.stderr)
+        print("请用 --help 查看可用参数及其取值范围。", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n已中断。", file=sys.stderr)
+        sys.exit(130)

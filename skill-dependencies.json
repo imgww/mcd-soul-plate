@@ -1,0 +1,407 @@
+{
+  "schema_version": "1",
+  "capabilities": [
+    "personality_preference_projection",
+    "nutrition_constraint_solving",
+    "single_meal_composition",
+    "personality_divergence_report",
+    "environment_readiness_routing",
+    "offline_sample_replay",
+    "parameter_visualization"
+  ],
+  "functional_degradations": [
+    {
+      "capability": "nutrition_constraint_solving",
+      "trigger": "MCP Token 未设置、认证失效或 mcp.mcd.cn 不可达",
+      "fallback": "改用仓库内 samples/nutrition-foods.raw.json 离线求解，算法与约束完全一致",
+      "user_input": "不额外询问，直接提示当前为离线数据并继续执行",
+      "limitations": "营养数据为 2026-10-09 实测快照，菜单可能已更新；不反映实时在售状态",
+      "evidence_label": "已验证",
+      "recovery": "按 references/setup-guide.md 配置 MCD_MCP_TOKEN 后重跑在线模式",
+      "stop_condition": "样本文件缺失或归一化后 0 项时停止，退出码 3，并打印真实键名供校准"
+    },
+    {
+      "capability": "single_meal_composition",
+      "trigger": "用户设定的约束在真实菜单上无解（如严格控钠与高蛋白低热量不可兼得）",
+      "fallback": "按 RELAX_STEPS 逐级放宽钠上限与热量容差，取第一个有解档位",
+      "user_input": "不额外询问，直接输出放宽建议并说明该调哪个参数",
+      "limitations": "放宽后的结果不再严格满足原始约束，差异会显式打印",
+      "evidence_label": "已验证",
+      "recovery": "按输出建议提高 --kcal、降低 --max-sodium 或放宽 --tolerance",
+      "stop_condition": "全部放宽档位仍无解时输出诊断建议并以退出码 1 结束，不生成假方案"
+    },
+    {
+      "capability": "personality_divergence_report",
+      "trigger": "不同人格收敛到相同首选（如严格控钠区间的低钠组合稀少）",
+      "fallback": "如实报告收敛数量与原因，不修改权重制造差异",
+      "user_input": "不额外询问，在 --compare 输出中标注收敛人格对",
+      "limitations": "16 人格不保证产出 16 种不同答案；真实数据下实测为 14 种",
+      "evidence_label": "已验证",
+      "recovery": "在 src/soul.py 调整对应人格的权重后复跑 --compare 观察变化",
+      "stop_condition": "若差异化为 False 说明权重失效，verify_divergence 会直接报出"
+    },
+    {
+      "capability": "offline_sample_replay",
+      "trigger": "运行时 samples/nutrition-foods.raw.json 不存在",
+      "fallback": "自动改用 tests/fixtures/ 合成夹具运行核心逻辑断言",
+      "user_input": "不额外询问，汇总区打印跳过数量与补样本指引",
+      "limitations": "依赖真实菜单的 8 项断言被标记为跳过，不计入通过数",
+      "evidence_label": "已验证",
+      "recovery": "重新拉取样本并先跑 docs/sanitize_sample.py 脱敏后入库",
+      "stop_condition": "合成夹具也不可用时以退出码 1 结束，不静默跳过全部断言"
+    },
+    {
+      "capability": "parameter_visualization",
+      "trigger": "需要重新生成 docs/ 下的三张配图",
+      "fallback": "配图 PNG 已随仓库提供，不重新生成也不影响任何核心功能",
+      "user_input": "不额外询问，直接使用仓库内既有 PNG",
+      "limitations": "重新生成需要本机 Chrome；缺失时 SVG 源文件仍可用",
+      "evidence_label": "部分验证",
+      "recovery": "安装 Chrome 后重跑 docs/make_soul_cards.py 与 make_menu_insight.py",
+      "stop_condition": "无 Chrome 且 SVG 也不可用时跳过配图更新，不阻塞其他能力"
+    },
+    {
+      "capability": "personality_preference_projection",
+      "trigger": "用户指定了 16 种之外的人格，或人格权重与菜单结构严重不匹配",
+      "fallback": "按最近邻映射到最接近的已知人格，并声明该映射关系",
+      "user_input": "告知映射到了哪个人格及依据，允许其改用 --kcal 等参数直接指定约束",
+      "limitations": "映射为近似，不保证完全贴合用户预期的人格特征",
+      "evidence_label": "部分验证",
+      "recovery": "在 src/soul.py 补充新的人格定义后复跑",
+      "stop_condition": "用户要求严格按自定义人格求解且无法映射时停止，不擅自套用近似人格"
+    },
+    {
+      "capability": "environment_readiness_routing",
+      "trigger": "执行前不确定环境是否具备运行条件",
+      "fallback": "返回 ready / partial / needs_setup / unavailable 四态并给出对应下一步",
+      "user_input": "只展示当前请求缺失的必需项，不输出凭据值",
+      "limitations": "网络探测只做 TCP 连通性验证，不保证业务接口一定可用",
+      "evidence_label": "已验证",
+      "recovery": "按状态对应的指引配置后重跑本检查",
+      "stop_condition": "环境为 needs_setup 或 unavailable 且无可用降级时停止受影响流程"
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "python-runtime",
+      "type": "runtime",
+      "required": true,
+      "auth_type": "none",
+      "capabilities": [
+        "personality_preference_projection",
+        "nutrition_constraint_solving",
+        "single_meal_composition",
+        "personality_divergence_report",
+        "offline_sample_replay"
+      ],
+      "checks": [
+        {
+          "id": "python-version",
+          "type": "python",
+          "required": true,
+          "command": "python",
+          "min_version": "3.10",
+          "field": "version_info"
+        }
+      ],
+      "setup": {
+        "official_home_url": "https://www.python.org/downloads/",
+        "official_docs_url": "https://docs.python.org/3/",
+        "download_url": "https://www.python.org/downloads/",
+        "steps": [
+          "安装 Python 3.10 或更高版本",
+          "本 Skill 零第三方依赖，无需 pip install",
+          "验证：python --version"
+        ],
+        "credential_storage": "不涉及凭据",
+        "verify": "python --version 输出 3.10 或更高",
+        "rotate_or_revoke": "不涉及",
+        "security": "仅使用标准库，不引入任何第三方包，避免供应链风险；不使用 eval/exec，不执行下载来的远程代码",
+        "verified_at": "2026-10-09",
+        "applies_to_version": "1.1.0"
+      },
+      "degradation": [
+        {
+          "capability": "nutrition_constraint_solving",
+          "trigger": "Python 低于 3.10，`X | None` 联合类型注解无法解析",
+          "fallback": "改用 typing.Optional 写法，需手工替换源码中的联合类型注解",
+          "user_input": "提示最低版本要求与替换方案，不自动改写源码",
+          "limitations": "手工替换后需重跑全部测试确认无回归",
+          "evidence_label": "推断",
+          "recovery": "升级 Python 至 3.10 及以上",
+          "stop_condition": "无法升级且不手工改写时停止，不使用可能行为不明的解释器继续"
+        },
+        {
+          "capability": "single_meal_composition",
+          "trigger": "Python 低于 3.10",
+          "fallback": "同 nutrition_constraint_solving 的降级路径",
+          "user_input": "同上",
+          "limitations": "同上",
+          "evidence_label": "推断",
+          "recovery": "升级 Python",
+          "stop_condition": "同上"
+        },
+        {
+          "capability": "personality_preference_projection",
+          "trigger": "Python 低于 3.10",
+          "fallback": "同上",
+          "user_input": "同上",
+          "limitations": "同上",
+          "evidence_label": "推断",
+          "recovery": "升级 Python",
+          "stop_condition": "同上"
+        },
+        {
+          "capability": "personality_divergence_report",
+          "trigger": "Python 低于 3.10",
+          "fallback": "同上",
+          "user_input": "同上",
+          "limitations": "同上",
+          "evidence_label": "推断",
+          "recovery": "升级 Python",
+          "stop_condition": "同上"
+        },
+        {
+          "capability": "offline_sample_replay",
+          "trigger": "Python 低于 3.10",
+          "fallback": "同上",
+          "user_input": "同上",
+          "limitations": "同上",
+          "evidence_label": "推断",
+          "recovery": "升级 Python",
+          "stop_condition": "同上"
+        }
+      ]
+    },
+    {
+      "id": "mcd-mcp",
+      "type": "mcp",
+      "required": false,
+      "auth_type": "token",
+      "capabilities": [
+        "nutrition_constraint_solving",
+        "single_meal_composition"
+      ],
+      "checks": [
+        {
+          "id": "mcp-registered",
+          "type": "mcp",
+          "required": true,
+          "server": "mcd-mcp",
+          "url": "https://mcp.mcd.cn"
+        },
+        {
+          "id": "mcp-capability-probe",
+          "type": "mcp_probe",
+          "required": true,
+          "server": "mcd-mcp",
+          "target": "list-nutrition-foods",
+          "url": "https://mcp.mcd.cn"
+        },
+        {
+          "id": "token-auth-probe",
+          "type": "auth_probe",
+          "required": true,
+          "server": "mcd-mcp",
+          "target": "https://mcp.mcd.cn",
+          "url": "https://mcp.mcd.cn"
+        },
+        {
+          "id": "token-env-present",
+          "type": "env",
+          "required": true,
+          "field": "MCD_MCP_TOKEN"
+        }
+      ],
+      "setup": {
+        "official_home_url": "https://open.mcd.cn/mcp",
+        "official_docs_url": "https://github.com/M-China/mcd-mcp-server",
+        "login_url": "https://open.mcd.cn/mcp",
+        "credential_url": "https://open.mcd.cn/mcp",
+        "console_path": [
+          "控制台",
+          "激活",
+          "同意服务协议",
+          "复制 Token"
+        ],
+        "scopes": [
+          "list-nutrition-foods（唯一使用的只读工具）"
+        ],
+        "credential_storage": "仅存于环境变量 MCD_MCP_TOKEN；绝不写入源码、日志、异常信息或任何提交文件；.gitignore 已拦截 .env / *token* / *secret* / mcp-config.json",
+        "steps": [
+          "在 https://open.mcd.cn/mcp 点击右上角「登录」，用手机号验证",
+          "登录成功后右上角变为「控制台」，点击打开控制台弹窗",
+          "点击「激活」申请 MCP Token，阅读并同意服务协议",
+          "复制 Token 后仅设置为环境变量 MCD_MCP_TOKEN",
+          "验证：python src/soul_plate.py --list-tools 应列出 35 个工具"
+        ],
+        "verify": "python src/soul_plate.py --list-tools 输出工具总数 35；或 python scripts/check_environment.py 状态不为 needs_setup",
+        "rotate_or_revoke": "重新激活即可获得新 Token，旧 Token 失效；本地删除环境变量即可停止使用",
+        "security": "本 Skill 只调用 list-nutrition-foods，刻意不接入 create-order、auto-bind-coupons、draw-lottery 等写操作工具，也不接入 query-my-* 个人资产查询；不需要门店信息、配送地址或会员资产；异常信息经 mask_secret 兜底脱敏",
+        "verified_at": "2026-10-09",
+        "applies_to_version": "1.1.0"
+      },
+      "degradation": [
+        {
+          "capability": "nutrition_constraint_solving",
+          "trigger": "MCD_MCP_TOKEN 未设置、认证失效或 mcp.mcd.cn 不可达",
+          "fallback": "改用 samples/nutrition-foods.raw.json 离线求解，算法与约束完全一致",
+          "user_input": "不额外询问，提示当前为离线数据并继续执行",
+          "limitations": "营养数据为 2026-10-09 实测快照，菜单可能已更新；不反映实时在售状态",
+          "evidence_label": "已验证",
+          "recovery": "按 references/setup-guide.md 配置 Token 后重跑在线模式",
+          "stop_condition": "样本也缺失时以退出码 3 停止并打印真实键名供校准"
+        },
+        {
+          "capability": "single_meal_composition",
+          "trigger": "MCD_MCP_TOKEN 未设置或服务不可达",
+          "fallback": "同上，改用离线样本完成组合求解",
+          "user_input": "同上",
+          "limitations": "同上，不反映实时在售与价格",
+          "evidence_label": "已验证",
+          "recovery": "配置 Token 后重跑",
+          "stop_condition": "样本缺失时停止，不生成假方案"
+        }
+      ]
+    },
+    {
+      "id": "nutrition-sample",
+      "type": "local-tool",
+      "required": true,
+      "auth_type": "none",
+      "capabilities": [
+        "offline_sample_replay",
+        "personality_divergence_report",
+        "nutrition_constraint_solving",
+        "single_meal_composition"
+      ],
+      "checks": [
+        {
+          "id": "sample-file-exists",
+          "type": "file",
+          "required": true,
+          "name": "nutrition-foods.raw.json",
+          "path": "samples/nutrition-foods.raw.json"
+        },
+        {
+          "id": "sample-has-data",
+          "type": "json_field",
+          "required": true,
+          "name": "nutrition-foods.raw.json",
+          "path": "samples/nutrition-foods.raw.json",
+          "field": "data"
+        }
+      ],
+      "setup": {
+        "official_home_url": "https://open.mcd.cn/mcp",
+        "official_docs_url": "https://github.com/M-China/mcd-mcp-server",
+        "download_url": "https://open.mcd.cn/mcp",
+        "steps": [
+          "若缺失：配置 MCD_MCP_TOKEN 后运行 python src/soul_plate.py --probe-dump samples/nutrition-foods.raw.json",
+          "入库前必须先运行 python docs/sanitize_sample.py 脱敏（traceId 等会话标识）",
+          "确认无 Token 与个人标识后再提交"
+        ],
+        "credential_storage": "样本已脱敏入库，不含任何凭据或个人标识",
+        "verify": "python -c \"import json;d=json.load(open('samples/nutrition-foods.raw.json',encoding='utf-8'));print(len(d['data'].splitlines()))\" 输出 161",
+        "rotate_or_revoke": "重新拉取并脱敏后替换旧文件",
+        "security": "样本仅含 list-nutrition-foods 的营养成分表；入库前经 docs/sanitize_sample.py 递归检查 15 类禁止字段并脱敏 traceId；.gitignore 默认拦截所有 *.raw.json，仅对本文件开白名单",
+        "verified_at": "2026-10-09",
+        "applies_to_version": "1.1.0"
+      },
+      "degradation": [
+        {
+          "capability": "offline_sample_replay",
+          "trigger": "samples/nutrition-foods.raw.json 缺失或为空",
+          "fallback": "测试自动改用 tests/fixtures/ 合成夹具运行核心逻辑断言",
+          "user_input": "不额外询问，汇总区打印跳过数量与补样本指引",
+          "limitations": "依赖真实菜单的 8 项断言被标记为跳过，不计入通过数",
+          "evidence_label": "已验证",
+          "recovery": "重新拉取样本并脱敏后入库",
+          "stop_condition": "合成夹具也不可用时以退出码 1 结束，不静默跳过全部断言"
+        },
+        {
+          "capability": "personality_divergence_report",
+          "trigger": "真实样本缺失",
+          "fallback": "改用合成夹具计算差异化，结论仅在该夹具下成立",
+          "user_input": "输出中标注数据来源为合成夹具，不冒充真实菜单结论",
+          "limitations": "合成夹具的品类结构与真实菜单不同，差异化数字不可直接外推",
+          "evidence_label": "已验证",
+          "recovery": "补齐真实样本后复跑",
+          "stop_condition": "无任何数据时停止报告差异化"
+        },
+        {
+          "capability": "nutrition_constraint_solving",
+          "trigger": "真实样本缺失且未配置 Token",
+          "fallback": "使用 tests/fixtures/ 合成夹具求解",
+          "user_input": "明确标注数据来源为合成数据",
+          "limitations": "夹具餐品为人为构造，不是麦当劳真实餐品",
+          "evidence_label": "已验证",
+          "recovery": "补齐样本或配置 Token",
+          "stop_condition": "两者都不可用时停止，不编造结果"
+        },
+        {
+          "capability": "single_meal_composition",
+          "trigger": "真实样本缺失且未配置 Token",
+          "fallback": "同上，使用合成夹具完成组合枚举",
+          "user_input": "同上",
+          "limitations": "同上",
+          "evidence_label": "已验证",
+          "recovery": "补齐样本或配置 Token",
+          "stop_condition": "同上"
+        }
+      ]
+    },
+    {
+      "id": "chrome-for-figures",
+      "type": "cli",
+      "required": false,
+      "auth_type": "none",
+      "capabilities": [
+        "parameter_visualization"
+      ],
+      "checks": [
+        {
+          "id": "chrome-present",
+          "type": "cli",
+          "required": true,
+          "command": "chrome"
+        },
+        {
+          "id": "chrome-version-probe",
+          "type": "cli_probe",
+          "required": true,
+          "command": "chrome",
+          "target": "chrome --version"
+        }
+      ],
+      "setup": {
+        "official_home_url": "https://www.google.com/chrome/",
+        "official_docs_url": "https://support.google.com/chrome/",
+        "download_url": "https://www.google.com/chrome/",
+        "steps": [
+          "仅在需要重新生成 docs/ 配图时安装 Chrome",
+          "正常推荐与对比功能不需要浏览器",
+          "验证：chrome --version 有输出"
+        ],
+        "credential_storage": "不涉及凭据",
+        "verify": "chrome --version 有版本输出",
+        "rotate_or_revoke": "不涉及",
+        "security": "仅以 headless 模式调用截图能力，本地渲染本地 SVG，不访问外部网络资源，不执行下载内容",
+        "verified_at": "2026-10-09",
+        "applies_to_version": "1.1.0"
+      },
+      "degradation": [
+        {
+          "capability": "parameter_visualization",
+          "trigger": "本机无 Chrome 或 headless 截图不可用",
+          "fallback": "直接使用仓库内已生成的 PNG 配图，不重新生成",
+          "user_input": "告知配图为仓库内既有产物，功能不受影响",
+          "limitations": "修改权重后无法自动更新配图，需手动处理",
+          "evidence_label": "部分验证",
+          "recovery": "安装 Chrome 后重跑 docs/make_soul_cards.py 与 make_menu_insight.py",
+          "stop_condition": "无 Chrome 且 SVG 也不可用时跳过配图更新，不阻塞其他能力"
+        }
+      ]
+    }
+  ]
+}
