@@ -229,7 +229,7 @@ mcd-soul-plate/
 ├── tests/
 │   ├── test_soul.py            36 项断言
 │   └── fixtures/               合成夹具（与真实数据物理隔离）
-├── samples/                    MCP 实时响应样本
+├── samples/                    MCP 实时响应样本（已脱敏并公开，供评审离线复现）
 ├── README.md · MCP_INTEGRATION.md · workbuddy.md
 └── CONTEST_DECLARATION.md · mcp-config.example.json · requirements.txt
 ```

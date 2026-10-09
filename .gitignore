@@ -8,9 +8,14 @@ mcp-config.local.json
 *secret*
 *credential*
 
-# MCP 实时响应样本默认不入库（见 samples/README.md 的理由）
-# 若确认无个人信息后需公开留档，人工 git add -f
+# MCP 实时响应样本：默认仍不入库，需人工确认后放行
 samples/*.raw.json
+
+# 例外：营养数据快照已完成脱敏审查并允许公开（见 samples/README.md）
+# 放行它是为了让评审 clone 后能直接复现 --compare 与 36 项回归断言。
+# 注意：**不是**所有 .raw.json 都可公开——新增样本前须先跑
+#       python docs/sanitize_sample.py 确认无 Token 与个人标识。
+!samples/nutrition-foods.raw.json
 
 # Python
 __pycache__/
